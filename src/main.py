@@ -28,14 +28,14 @@ add_service(mosquitto, False)
 resolver = Resolver()
 add_service(Resolver(), False, mosquitto)
 
-vider = Vider(backend="no")
-add_service(vider, False, resolver)
+vider = Vider()
+add_service(vider, True, resolver)
 
 add_service(Kairos(), False, mosquitto)
 
 # Add the app nodes
 
-robot_count = 5
+robot_count = 2
 
 docker_video_path = "/data/crowd_run_1080p50.y4m"
 host_video_path = os.path.abspath("./crowd_run_1080p50.y4m")
@@ -44,7 +44,7 @@ for i in range(robot_count):
     component = Component(
         image="explorer",
         name=f"node-{i}",
-        command=f"./explorer process {i} {docker_video_path} --n {robot_count} --framing detached",
+        command=f"./explorer process {i} {docker_video_path} --n {robot_count} --framing unified",
         stdout=False
     )
     component.mount(host_video_path, docker_video_path)
