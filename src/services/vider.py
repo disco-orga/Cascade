@@ -12,8 +12,16 @@ class Vider(Component):
                  broker_port=1883
                  ):
         
-        command = f"./vider --name {name} --broker-port {broker_port} --broker-host {broker_host} --stream-server-ip {stream_server_ip} --stream-server-port {stream_server_port} --web-server-ip {web_server_ip} --web-server-port {web_server_port}"
-
+        command = [
+                "./vider",
+                "--name", str(name),
+                "--broker-port", str(broker_port),
+                "--broker-host", broker_host,
+                "--stream-server-ip", stream_server_ip,
+                "--stream-server-port", str(stream_server_port),
+                "--web-server-ip", web_server_ip,
+                "--web-server-port", str(web_server_port),
+            ]
 
         super().__init__(
             image="vider",

@@ -7,7 +7,8 @@ class Mosquitto(Component):
             image="eclipse-mosquitto",
             name= name,
             stderr=False,
-            stdout=False
+            stdout=False,
+            redeploy=False
         )
         self.host = host or self.name
         self.port = port

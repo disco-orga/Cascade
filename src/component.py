@@ -8,7 +8,7 @@ class Component:
     configuration (replicas, etc.).
     """
 
-    def __init__(self, image, replicas=1, name=None, command=None, stdout=False, stderr=True, ports=None):
+    def __init__(self, image, replicas=1, name=None, command=None, stdout=False, stderr=True, ports=None, redeploy=True):
         """
         Initialize a Component.
         """
@@ -21,6 +21,7 @@ class Component:
         self.ports = ports or {}
         self.mounting = {}
         self.dependencies = []
+        self.redeploy = redeploy
 
     def depends_on(self, dependency):
         self.dependencies.append(dependency)

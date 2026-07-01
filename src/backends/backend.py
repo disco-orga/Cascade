@@ -3,8 +3,13 @@ from abc import ABC, abstractmethod
 class Backend(ABC):
 
     @abstractmethod
-    def allocate_nodes(self, nodes_count: int):
-        """Allocate a number of nodes and return them."""
+    def reserve_node(self, node):
+        """Remembers to reserve a specific node"""
+        pass
+
+    @abstractmethod
+    def setup(self):
+        """Called before the deployment to allocate nodes and manage network"""
         pass
 
     @abstractmethod

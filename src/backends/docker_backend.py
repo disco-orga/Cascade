@@ -20,10 +20,8 @@ class DockerBackend(Backend):
                 check_duplicate=True
             )
 
-    def allocate_nodes(self, nodes_count: int):
-        """Allocate a number of nodes and return them."""
-        self.setup()
-        return [f"node{i}" for i in range(nodes_count)]
+    def reserve_node(self, node):
+        pass
 
     def _remove_one_container(self, container_id):
         container = self.client.containers.get(container_id)
@@ -74,7 +72,7 @@ class DockerBackend(Backend):
         """Deploy an image to a given node."""
         name = component.name
         image = component.image
-        command = component.command
+        command = " ".join(component.command)
         ports = component.ports
 
         if name is None:
@@ -82,11 +80,12 @@ class DockerBackend(Backend):
             count = self.image_count.get(base_name, 0)
             name = base_name if count == 0 else f"{base_name}_{count}"
             self.image_count[base_name] = count + 1
-        
-        try:
-            self._remove_one_container(name)
-        except NotFound:
-            pass
+
+        if component.redeploy:
+            try:
+                self._remove_one_container(name)
+            except NotFound:
+                pass
 
         try:
             volumes = {

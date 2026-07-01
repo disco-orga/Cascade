@@ -1,4 +1,4 @@
-# Deployer
+# Cascade
 
 The first implementation will focus on a deployer for the testbed. The goal is to follow a design similar to FogROS2 by providing a generic Python API.
 

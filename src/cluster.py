@@ -17,7 +17,7 @@ class Cluster:
     def __init__(self, backend=DockerBackend(clean_before=True), setup_logging=True, max_concurency=None):
         """Initialize an empty cluster."""
         self.backend = backend
-        self.node_count = 0
+        self.nodes = []
         self.components = []
         self.max_concurency = max_concurency
         
@@ -32,23 +32,15 @@ class Cluster:
                 format="[%(name)s] %(message)s"
             )
 
-    def allocate(self, n):
-        """
-        Allocate nodes in the cluster.
-        """
-        self.node_count += n
+    def reserve_node(self, node):
+        self.nodes.append(node)
+        self.backend.reserve_node(node)
 
     def add(self, comp):
         """
         Add a Component to the cluster.
         """
         self.components.append(comp)
-
-    def _allocate_nodes(self):
-        """
-        Generate node identifiers.
-        """
-        return self.backend.allocate_nodes(self.node_count)
 
 
     def get_sorted_components(self):
@@ -124,8 +116,7 @@ class Cluster:
         Build a deployment plan.
         The plan assigns each component replica to a node.
         """
-        nodes = self._allocate_nodes()
-        n = len(nodes)
+        n = len(self.nodes)
 
         if n == 0:
             raise ValueError("No nodes allocated")
@@ -134,7 +125,7 @@ class Cluster:
             workflows = []
             for comp in components:
                 for _ in range(comp.replicas):
-                    node = nodes[i % n]
+                    node = self.nodes[i % n]
                     workflows.append(comp.deployment_workflow(node))
                     i += 1
             return (workflows, i)
@@ -168,7 +159,9 @@ class Cluster:
         Run the deployment process.
         This includes:
         1. Building the deployment workflow
-        2. Executing it
+        2. Allocate the nodes
+        3. Executing it
         """
         plan = self._build_plan()
+        self.backend.setup()
         self._execute(plan)

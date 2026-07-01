@@ -5,13 +5,16 @@ from component import Component
 from services.mosquitto import Mosquitto
 from services.kairos import Kairos
 from services.vider import Vider
+from services.pinger import Pinger
+from services.netshoot import Netshoot
 from services.resolver import Resolver
+from backends.expeca import ExpecaBackend, ExpecaNode
 
-cluster = Cluster(max_concurency=5)
-
-nodes = cluster.allocate(3)
+cluster = Cluster(backend=ExpecaBackend(), max_concurency=5)
+cluster.reserve_node(ExpecaNode("worker-08", 0, 4))
 
 # Add the services
+
 
 def add_service(service, log_it, dependency=None):
     global cluster
@@ -23,51 +26,49 @@ def add_service(service, log_it, dependency=None):
     cluster.add(service)
 
 mosquitto = Mosquitto()
-add_service(mosquitto, False)
+add_service(mosquitto, True)
 
-resolver = Resolver()
-add_service(Resolver(), False, mosquitto)
+add_service(Pinger("mosquitto"), True, mosquitto)
+# add_service(Netshoot(), True, mosquitto)
 
-vider = Vider()
-add_service(vider, True, resolver)
+# resolver = Resolver()
+# add_service(Resolver(), False, mosquitto)
 
-add_service(Kairos(), False, mosquitto)
+# vider = Vider()
+# add_service(vider, True, resolver)
 
-# Add the app nodes
+# add_service(Kairos(), False, mosquitto)
 
-robot_count = 2
+# # Add the app nodes
 
-docker_video_path = "/data/crowd_run_1080p50.y4m"
-host_video_path = os.path.abspath("./crowd_run_1080p50.y4m")
+# robot_count = 2
 
-for i in range(robot_count):
-    component = Component(
-        image="explorer",
-        name=f"node-{i}",
-        command=f"./explorer process {i} {docker_video_path} --n {robot_count} --framing unified",
-        stdout=False
-    )
-    component.mount(host_video_path, docker_video_path)
-    component.depends_on(vider)
-    cluster.add(component)
+# docker_video_path = "/data/crowd_run_1080p50.y4m"
+# host_video_path = os.path.abspath("./crowd_run_1080p50.y4m")
 
-cloud = Component(
-    image="explorer",
-    name=f"cloud",
-    command=f"./explorer cloud",
-    stdout=False,
-)
-cloud.depends_on(mosquitto)
+# for i in range(robot_count):
+#     component = Component(
+#         image="explorer",
+#         name=f"node-{i}",
+#         command=["./explorer", "process", f"{i}", docker_video_path, "--n", f"{robot_count}", "--framing", "unified"],
+#         stdout=False
+#     )
+#     component.mount(host_video_path, docker_video_path)
+#     component.depends_on(vider)
+#     cluster.add(component)
 
-cluster.add(cloud)
+# cloud = Component(
+#     image="explorer",
+#     name=f"cloud",
+#     command=["./explorer", "cloud"],
+#     stdout=False,
+# )
+# cloud.depends_on(mosquitto)
+
+# cluster.add(cloud)
 
 
 
 # Execute deployment
 cluster.run()
 
-try:
-    while True:
-        time.sleep(1)
-except KeyboardInterrupt:
-    pass
