@@ -18,6 +18,7 @@ cluster.reserve_node(ExpecaNode("worker-08", 0, 4))
 
 def add_service(service, log_it, dependency=None):
     global cluster
+
     if log_it:
         service.set_logs(stdout=True, stderr=True)
 
@@ -28,14 +29,15 @@ def add_service(service, log_it, dependency=None):
 mosquitto = Mosquitto()
 add_service(mosquitto, True)
 
-add_service(Pinger("mosquitto"), True, mosquitto)
-# add_service(Netshoot(), True, mosquitto)
+# add_service(Pinger("mosquitto"), True, mosquitto)
 
-# resolver = Resolver()
-# add_service(Resolver(), False, mosquitto)
 
-# vider = Vider()
-# add_service(vider, True, resolver)
+resolver = Resolver()
+add_service(Resolver(), False, mosquitto)
+
+vider = Vider()
+add_service(vider, True, resolver)
+add_service(Netshoot(), True, vider)
 
 # add_service(Kairos(), False, mosquitto)
 

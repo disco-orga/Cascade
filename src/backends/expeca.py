@@ -1,3 +1,6 @@
+import time
+import tempfile
+import shlex
 
 from dataclasses import dataclass
 
@@ -5,7 +8,6 @@ from backends.backend import Backend
 import chi.expeca
 import chi.network
 import chi.container
-import shlex
 
 
 @dataclass
@@ -31,18 +33,38 @@ class ExpecaBackend(Backend):
         self.allocated_nodes = []
         self.leases = []
         self.network = None
+        self.hosts = {}
 
-    def get_or_create_network(self, name):
+    def setup_network(self):
+        net_name = "disco_net"
+        
         for network in chi.network.list_networks():
-            if network["name"] == name:
-                return network
+            if network["name"] == net_name:
+                self.network = network
 
-        return chi.network.create_network(name)
+        self.network = chi.network.create_network(net_name)
+        chi.network.create_subnet("disco-subnet", self.network["id"])
 
     def get_ready_path(self):
-        return "/var/run/disco/ready", "/var/run/disco"
+        return "/disco_ready"
+
+    def build_hosts_file(self):
+        return "\n".join(f"{ip} {name}" for name, ip in self.hosts.items()) + "\n"
+
+    def add_host(self, name, ip):
+        self.hosts[name] = ip
 
     def setup(self):
+        def reserve(node):
+            chi.expeca.reserve({
+                "type": "device",
+                "name": node.worker_name,
+                "duration": {
+                    "days": node.days,
+                    "hours": node.hours,
+                }
+            })
+
         self.leases.clear()
 
         for node in self.nodes.values():
@@ -51,28 +73,29 @@ class ExpecaBackend(Backend):
             lease_name = f"{node.worker_name}-lease"
             lease = chi.expeca.show_reservation_byname(lease_name)
             if lease is None:
-                lease = chi.expeca.reserve({
-                    "type": "device",
-                    "name": node.worker_name,
-                    "duration": {
-                        "days": node.days,
-                        "hours": node.hours,
-                    }
-                })
+                lease = reserve(node)
+            elif lease["status"] == "TERMINATED":
+                answer = input(
+                    f"The lease '{lease_name}' has been terminated.\n"
+                    "Remove it and reserve a new one? [Y/n] "
+                ).strip().lower()
+
+                if answer in ("", "y", "yes"):
+                    chi.expeca.remove_lease(lease["id"], lease["name"])
+                    lease = reserve(node)
+                else:
+                    raise RuntimeError(
+                        f"Cannot continue: lease '{lease_name}' is terminated."
+                    )                
 
             reservation_id = lease["reservations"][0]["id"]
 
             self.leases.append(lease)
             self.nodes[node.worker_name]["allocated"] = ExpecaNodeAllocated(reservation_id=reservation_id)
-        self.network = self.get_or_create_network("disco-net")
 
+        # self.setup_network()
     
-    def network_id(self):
-        if self.network is None:
-            raise RuntimeError("Cannot fetch network id if the network has not been initialized.")
-        else:
-            return self.network["id"]
-
+    
     def reserve_node(self, node):
         self.nodes[node.worker_name] = {
             "allocated": None,
@@ -88,52 +111,59 @@ class ExpecaBackend(Backend):
         
         c = containers.get(component.name) 
 
-        if c is not None and component.redeploy:
-            
-            if c.status == "Creating":
-                chi.clients.zun().containers.delete(
-                    c.uuid,
-                    force=True,
-                )
-                
-                return
-            else:
-                chi.container.destroy_container(component.name)
+        if c is not None and component.redeploy:            
+            chi.clients.zun().containers.delete(c.uuid, force=True)
         elif c is not None:
+            self.add_host(c.name, next(iter(c.addresses.values()))[0]["addr"])
             return
-        
+
         print(f"Deploying {component.name} on {reservation_id}")
 
-        ready_path, ready_folder = self.get_ready_path()
+        ready_path = self.get_ready_path()
+        
+        command = None
 
-        command = [
-            "sh",
-            "-c",
-            f"""
+        if component.command is None and component.mounting != {}:
+            raise RuntimeError("If you want to mount a file, you need to declare the command explicitly.")
+        elif component.command is not None:
+            command = [
+                "sh",
+                "-c",
+                f"""
 while [ ! -f {ready_path} ]; do
-    echo 1
     sleep 0.2
 done
-echo 2
-exec {" ".join(shlex.quote(arg) for arg in component.command)}
+{" ".join(shlex.quote(arg) for arg in component.command)}
+sleep infinity
 """,
-        ]
+            ]
 
         kwargs = {
             "name": component.name,
             "image": component.image,
             "reservation_id": reservation_id,
-            "command": command,
-            "nets": [{"network": self.network_id()}],
+            "command": command
         }
 
-        # if component.command:
-        #     kwargs["command"] = component.command
-
-        # if component.ports:
-        #     kwargs["exposed_ports"] = list(component.ports.keys())
-
         container = chi.container.create_container(**kwargs)
+        network_id = next(iter(container.addresses))
+        self.add_host(container.name, container.addresses[network_id][0]["addr"])
+
+
+        hosts = chi.container.execute(
+            container.uuid,
+            command="cat /etc/hosts"
+        )["output"]
+
+        hosts += "\n"
+        hosts += self.build_hosts_file()
+
+        cmd = (
+            "sh -c "
+            + shlex.quote(f"printf %s {shlex.quote(hosts)} > /etc/hosts")
+        )        
+        chi.container.execute(component.name, cmd)
+        
         for src, dst in component.mounting.items():
             chi.container.upload(
                 component.name,
@@ -141,7 +171,4 @@ exec {" ".join(shlex.quote(arg) for arg in component.command)}
                 dst,
             )
 
-        print(chi.clients.zun().containers.execute(
-            container.uuid,
-            command=f"""sh -c 'mkdir -p {ready_folder} && echo ready > {ready_path}'"""
-        ))
+        chi.container.execute(container.uuid, command=f"touch {ready_path}")

@@ -4,6 +4,7 @@ from backends.docker_backend import DockerBackend
 from steps import ParallelGroup, Step
 
 class Cluster:
+
     """
     Represents the deployment cluster.
 
