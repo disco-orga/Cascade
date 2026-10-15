@@ -3,74 +3,71 @@ import time
 from cluster import Cluster
 from component import Component
 from services.mosquitto import Mosquitto
-from services.kairos import Kairos
-from services.vider import Vider
-from services.pinger import Pinger
-from services.netshoot import Netshoot
-from services.resolver import Resolver
 from backends.expeca import ExpecaBackend, ExpecaNode
+from backends.docker_backend import DockerBackend
 
-cluster = Cluster(backend=ExpecaBackend(), max_concurency=5)
-cluster.reserve_node(ExpecaNode("worker-08", 0, 4))
+cluster = Cluster(backend=ExpecaBackend(), max_concurrency=1)
+cluster.reserve_node(ExpecaNode("worker-07", days=0, hours=4))
+
+# cluster = Cluster(backend=DockerBackend(), max_concurrency=5, fetch_images=False)
+# cluster.reserve_node("node")
 
 # Add the services
 
-
-def add_service(service, log_it, dependency=None):
-    global cluster
-
-    if log_it:
-        service.set_logs(stdout=True, stderr=True)
-
-    if dependency is not None:
-        service.depends_on(dependency)
-    cluster.add(service)
-
-mosquitto = Mosquitto()
-add_service(mosquitto, True)
-
-# add_service(Pinger("mosquitto"), True, mosquitto)
+cluster.add_streaming()
+cluster.add_monitoring(prom_config="./prometheus.yml")
 
 
-resolver = Resolver()
-add_service(Resolver(), False, mosquitto)
+# Add the app nodes
 
-vider = Vider()
-add_service(vider, True, resolver)
-add_service(Netshoot(), True, vider)
+robot_count = 3
+image = "explorer"
 
-# add_service(Kairos(), False, mosquitto)
+kairos = Component(
+    "kairos",
+    name="kairos",
+    stdout=True
+)
+kairos.depends_on("argus")
+cluster.add(kairos)
 
-# # Add the app nodes
-
-# robot_count = 2
-
-# docker_video_path = "/data/crowd_run_1080p50.y4m"
-# host_video_path = os.path.abspath("./crowd_run_1080p50.y4m")
-
-# for i in range(robot_count):
-#     component = Component(
-#         image="explorer",
-#         name=f"node-{i}",
-#         command=["./explorer", "process", f"{i}", docker_video_path, "--n", f"{robot_count}", "--framing", "unified"],
-#         stdout=False
-#     )
-#     component.mount(host_video_path, docker_video_path)
-#     component.depends_on(vider)
-#     cluster.add(component)
-
-# cloud = Component(
-#     image="explorer",
-#     name=f"cloud",
-#     command=["./explorer", "cloud"],
-#     stdout=False,
-# )
-# cloud.depends_on(mosquitto)
-
-# cluster.add(cloud)
+prism = Component(
+    "prism",
+    name=f"prism"
+)
+prism.expose_port(3333, 3333)
+prism.depends_on("vider")
+cluster.add(prism)
 
 
+for i in range(robot_count):
+    component = Component(
+        image,
+        name=f"node-{i}",
+        command=["./explorer", "process", f"{i}", "--video-kind", "gol", "--n", f"{robot_count}", "--framing", "unified"],
+        stdout=True
+    )
 
-# Execute deployment
+    # Vider is part of the streaming batch
+    component.depends_on("prism")
+    cluster.add(component)
+
+
+cloud = Component(
+    image,
+    name=f"cloud",
+    command=["./explorer", "cloud"]
+)
+
+# Mosquitto is part of the streaming and prometheus batch
+cloud.depends_on("mosquitto")
+cluster.add(cloud)
+
+for name in ["argus"]:
+    cluster.get_comp(name).set_logs(stdout=True, stderr=False)
+
+# # Execute deployment
 cluster.run()
 
+while True:
+    pass

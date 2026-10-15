@@ -1,6 +1,16 @@
+from __future__ import annotations
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from component import Component
+
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from typing import Callable
+from backends.backend import Backend
+
+@dataclass
+class Step:
+    pass
 
 class Executable(ABC):
     def process(self, backend):
@@ -13,18 +23,15 @@ class Workflow(Executable):
     def process(self, backend):
         for step in self.steps:
             step.process(backend)
-
-@dataclass
-class Step:
-    pass
-
+            
 @dataclass
 class Deploy(Step):
-    comp: str
+    comp: Component
     node: str
 
     def process(self, backend):
         backend.deploy(self.comp, self.node)
+        
 
 @dataclass
 class Do(Step):
@@ -35,8 +42,8 @@ class Do(Step):
 
 @dataclass
 class ParallelGroup(Executable):
-    workflows: List[Workflow]
-    max_concurency: int
+    workflows: list[Workflow]
+    max_concurrency: int
 
     def process(self, backend):
         import threading
@@ -45,12 +52,12 @@ class ParallelGroup(Executable):
         def exec_one_workflow(workflow):
             workflow.process(backend)
 
-        max_concurency = len(self.workflows) if self.max_concurency <= 0 else self.max_concurency
+        max_concurrency = len(self.workflows) if self.max_concurrency <= 0 else self.max_concurrency
         
         with ThreadPoolExecutor() as ex:
             futures = []
             i = 0
-            while len(futures) < max_concurency and i < len(self.workflows):
+            while len(futures) < max_concurrency and i < len(self.workflows):
                 futures.append(ex.submit(exec_one_workflow, self.workflows[i]))
                 i += 1
 

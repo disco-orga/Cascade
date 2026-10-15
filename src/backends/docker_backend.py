@@ -1,5 +1,5 @@
-from backends.backend import Backend
 import docker
+from backends.backend import Backend
 from docker.errors import NotFound, ImageNotFound, APIError
 
 class DockerBackend(Backend):
@@ -71,8 +71,13 @@ class DockerBackend(Backend):
 
         """Deploy an image to a given node."""
         name = component.name
-        image = component.image
-        command = " ".join(component.command)
+        image = component.get_image()
+        entrypoint = component.entrypoint
+        
+        command = None
+        if component.command is not None:
+            command = " ".join(component.command)
+
         ports = component.ports
 
         if name is None:
@@ -93,16 +98,18 @@ class DockerBackend(Backend):
                 for k, v in component.mounting.items()
             }
             
-            print(f"Deploying {name}")
+            print(f"Deploying {name} with image {image}")
             container = self.client.containers.run(
                 image,
                 detach=True,
                 network=self.network_name,
+                entrypoint=entrypoint,
                 labels={"node": node},
                 name=name,
                 command=command,
                 ports=ports,
-                volumes=volumes
+                volumes=volumes,
+                environment=component.env,
             )
             self.containers.append(name)
 
