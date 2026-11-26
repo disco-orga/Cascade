@@ -11,14 +11,20 @@ class Argus(Component):
         prom_port=9090,
         **kwargs,
     ):
+
         command = [
             "./argus",
             "--name", str(name),
             "--broker-port", str(broker_port),
-            "--broker-host", broker,
-            "--prom-host", prom_host,
             "--prom-port", str(prom_port),
         ]
+
+        if broker is not None:
+            command.extend(["--broker-host", str(broker)])
+
+        if prom_host is not None:
+            command.extend(["--prom-host", str(prom_host)])
+
 
         args = {
             "image": "ghcr.io/zivomartin/argus:latest",

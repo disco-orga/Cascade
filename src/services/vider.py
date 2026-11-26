@@ -6,7 +6,7 @@ class Vider(Component):
     def __init__(
         self,
         name="vider",
-        server_ip=None,
+        server_ip="0.0.0.0",
         tcp_port=None,
         tls_port=None,
         tls_cert_path=None,

@@ -25,16 +25,14 @@ class PrometheusBatch(Batch):
     def __init__(
             self,
             prom_config=None,
+            prom_targets=None,
             prom=None,
             exporters={},
             argus=None,
             broker=None
     ):
         self.argus = argus or Argus()
-
-        if prom is None and prom_config is None:
-            raise RuntimeError("Please, specify a config path for prometheus.")
-        self.prom = prom or Prometheus(config_path=prom_config)
+        self.prom = prom or Prometheus(config_path=prom_config, targets=prom_targets)
 
         self.broker = broker or Mosquitto()
         self.exporters = exporters

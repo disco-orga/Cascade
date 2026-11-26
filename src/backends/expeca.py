@@ -1,7 +1,10 @@
 import time
 import shlex
 import shutil
+import yaml
 import tempfile
+import threading
+
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -14,7 +17,8 @@ import chi.container
 
 DEBUG = True
 HOSTS_PATH = "/etc/hosts"
-
+WRAPPER_IMAGE = "samiemostafavi/sshd-dind-oai"
+COMPOSE_FILE = "/tmp/compose.yaml"
 
 def debug(message, **details):
     """Print diagnostic information only when DEBUG is enabled."""
@@ -38,7 +42,7 @@ class ExpecaNodeAllocated:
 
 
 class ExpecaBackend(Backend):
-    def __init__(self, network_name="disco-net", config_dns=False):
+    def __init__(self, network_name="disco-net"):
         self.network_name = network_name
         self.nodes = {}
         self.allocated_nodes = []
@@ -46,7 +50,7 @@ class ExpecaBackend(Backend):
         self.network = None
         self.hosts = {}
         self.orchestrator = None
-        self.config_dns = config_dns
+        self.orchestrator_lock = threading.Lock()
 
     def format_name(self, name):
         return name.replace("_", "")
@@ -56,6 +60,16 @@ class ExpecaBackend(Backend):
             debug("Command failed", operation=operation, result=result)
             raise RuntimeError(f"{operation} failed:\n{result['output']}")
         return result
+
+    def resolve_name(self, name):
+        name = self.format_name(name)
+
+        try:
+            return self.hosts[name]
+        except KeyError:
+            raise RuntimeError(
+                f"Cannot resolve '{name}': container has not been registered."
+            )
 
     def setup_network(self):
         debug("Looking up network", name=self.network_name)
@@ -69,43 +83,73 @@ class ExpecaBackend(Backend):
         debug("Created network and subnet", network_id=self.network["id"])
 
     def start_orchestrator(self):
-        if not self.nodes:
-            raise RuntimeError("Cannot start orchestrator if no nodes are available.")
-        debug("Starting orchestrator")
-        self.orchestrator = self.deploy(
-            Netshoot(name="cascade_orchestrator"),
-            next(iter(self.nodes.values()))["reserved"],
-            register_host=False,
-        )
-        debug("Orchestrator ready", uuid=self.orchestrator.uuid)
+        with self.orchestrator_lock:
+            if self.orchestrator is not None:
+                return
+
+            if not self.nodes:
+                raise RuntimeError("No nodes available")
+
+            self.orchestrator = self.deploy(
+                Netshoot(name="cascade_orchestrator"),
+                next(iter(self.nodes.values()))["reserved"],
+                register_host=False,
+            )
 
     def wait_for(self, host, port, timeout):
         if self.orchestrator is None:
             self.start_orchestrator()
 
-        self.upload_hosts(self.orchestrator)
-        resolved_host = self.hosts.get(self.format_name(host), host)
-        debug("Waiting for service", host=host, resolved_host=resolved_host, port=port, timeout=timeout)
+        resolved_host = self.resolve_name(host)
+
+        debug(
+            "Waiting for service",
+            host=host,
+            resolved_host=resolved_host,
+            port=port,
+            timeout=timeout,
+        )
+
         deadline = time.monotonic() + timeout
         attempt = 0
 
         while time.monotonic() < deadline:
             attempt += 1
+
+            command = (
+                "docker exec cascadeorchestrator "
+                f"nc -z -w 2 {shlex.quote(str(resolved_host))} {int(port)}"
+            )
+
             result = chi.container.execute(
                 self.orchestrator.uuid,
-                f"nc -zw1 {shlex.quote(str(resolved_host))} {int(port)}",
+                command,
             )
+
             if result["exit_code"] == 0:
-                debug("Service reachable", host=host, resolved_host=resolved_host, port=port, attempts=attempt)
+                debug(
+                    "Service reachable",
+                    host=host,
+                    resolved_host=resolved_host,
+                    port=port,
+                    attempts=attempt,
+                )
                 return
-            debug("Connection attempt failed", attempt=attempt, host=resolved_host, port=port,
-                  exit_code=result["exit_code"], output=result.get("output"))
+
+            debug(
+                "Connection attempt failed",
+                attempt=attempt,
+                host=resolved_host,
+                port=port,
+                exit_code=result["exit_code"],
+                output=result.get("output"),
+            )
+
             time.sleep(0.2)
 
-        raise RuntimeError(f"Timeout waiting for {host} ({resolved_host}):{port}")
-
-    def get_ready_path(self):
-        return "/disco_ready"
+        raise RuntimeError(
+            f"Timeout waiting for {host} ({resolved_host}):{port}"
+        )
 
     def build_hosts_file(self):
         return "\n".join(f"{ip} {name}" for name, ip in self.hosts.items()) + "\n"
@@ -161,29 +205,6 @@ class ExpecaBackend(Backend):
     def allocated(self, node):
         return self.nodes[node]["allocated"]
 
-    def upload_hosts(self, container):
-        debug("Preparing hosts file", container=container.name, destination=HOSTS_PATH)
-        current = chi.container.execute(container.uuid, f"cat {shlex.quote(HOSTS_PATH)}")
-        if current["exit_code"] == 0:
-            hosts = current["output"].rstrip("\n") + "\n"
-        else:
-            debug("Hosts destination absent or unreadable; starting fresh", output=current.get("output"))
-            hosts = ""
-        hosts += self.build_hosts_file()
-        debug("Hosts content prepared", content=hosts)
-
-        with tempfile.NamedTemporaryFile(mode="w+", encoding="utf-8") as f:
-            f.write(hosts)
-            f.flush()
-            self.upload(container, f.name, HOSTS_PATH)
-
-    def upload_ready_file(self, container):
-        path = self.get_ready_path()
-        debug("Uploading readiness marker", container=container.name, destination=path)
-        with tempfile.NamedTemporaryFile(mode="w+", encoding="utf-8") as f:
-            f.write("ready")
-            f.flush()
-            self.upload(container, f.name, path)
 
     def delete_and_wait(self, container):
         debug("Deleting container", name=container.name, uuid=container.uuid)
@@ -213,8 +234,6 @@ class ExpecaBackend(Backend):
         self.add_host(container.name, ip)
 
     def upload(self, container, src, dst):
-        print("WARN: Uploading a file on EXPECA is not stable yet.")
-
         src = Path(src)
         dst = Path(dst)
 
@@ -247,6 +266,248 @@ class ExpecaBackend(Backend):
                     f"Upload failed: {dst} was not created in {container.name}"
                 )
 
+    def insert_hosts_ip_in_env(self, env):
+        """Insert each registered host's IP as an environment variable NAME_IP."""
+        env = dict(env or {})
+
+        for name, ip in self.hosts.items():
+            env[f"{name.upper()}_IP"] = str(ip)
+
+        return env
+
+    def wait_for_docker(self, wrapper):
+        debug(
+            "Waiting for Docker daemon",
+            wrapper=wrapper.name,
+            uuid=wrapper.uuid,
+        )
+
+        for attempt in range(1, 31):
+            debug(
+                "Checking Docker daemon",
+                wrapper=wrapper.name,
+                attempt=attempt,
+            )
+
+            try:
+                result = chi.container.execute(
+                    wrapper.uuid,
+                    "docker info",
+                )
+            except Exception as e:
+                debug(
+                    "Execution failed",
+                    wrapper=wrapper.name,
+                    uuid=wrapper.uuid,
+                    attempt=attempt,
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
+
+                try:
+                    container = chi.container.get_container(wrapper.uuid)
+                    debug(
+                        "Wrapper status after execution failure",
+                        wrapper=wrapper.name,
+                        status=container.status,
+                        status_reason=getattr(container, "status_reason", None),
+                    )
+                except Exception as status_error:
+                    debug(
+                        "Failed to retrieve wrapper status",
+                        wrapper=wrapper.name,
+                        error=str(status_error),
+                    )
+
+                time.sleep(1)
+                continue
+
+            debug(
+                "Docker info returned",
+                wrapper=wrapper.name,
+                attempt=attempt,
+                exit_code=result.get("exit_code"),
+            )
+
+            if result.get("exit_code") == 0:
+                debug(
+                    "Docker daemon ready",
+                    wrapper=wrapper.name,
+                    attempts=attempt,
+                )
+                return
+
+            debug(
+                "Docker daemon not ready",
+                wrapper=wrapper.name,
+                attempt=attempt,
+            )
+
+            time.sleep(1)
+
+        debug(
+            "Docker daemon readiness timeout",
+            wrapper=wrapper.name,
+            uuid=wrapper.uuid,
+        )
+
+        raise RuntimeError(
+            f"Docker daemon failed to become ready in '{wrapper.name}'"
+        )
+
+    def launch_compose(self, component, wrapper):
+        while True:
+            result = chi.container.execute(
+                wrapper.uuid,
+                f"docker pull {shlex.quote(component.image)}",
+            )
+
+            if result["exit_code"] == 0:
+                break
+
+            if result["exit_code"] is not None:
+                raise RuntimeError(result["output"])
+
+            time.sleep(2)
+
+        result = chi.container.execute(
+            wrapper.uuid,
+            f"docker compose -f {shlex.quote(COMPOSE_FILE)} -p disco up -d",
+        )
+        return self.check(result, "Launch nested container")
+
+    def launch_container(self, component, wrapper):
+        name = self.format_name(component.name)
+
+        debug(
+            "Preparing nested container deployment",
+            component=component.name,
+            wrapper=wrapper.name,
+            image=component.image,
+        )
+
+        config = {
+            "services": {
+                "app": {
+                    "image": component.image,
+                    "container_name": name,
+                    "environment": self.insert_hosts_ip_in_env(component.env),
+                    "volumes": [
+                        f"{dst}:{dst}"
+                        for dst in component.mounting.values()
+                    ],
+                }
+            }
+        }
+
+        service = config["services"]["app"]
+
+        if component.entrypoint is not None:
+            service["entrypoint"] = component.entrypoint
+
+        if component.command is not None:
+            service["command"] = component.command
+
+        hosts = dict(self.hosts)
+
+        if self.hosts:
+            service["extra_hosts"] = {
+                name: str(ip)
+                for name, ip in self.hosts.items()
+            }
+
+        if component.ports:
+            service["ports"] = [
+                f"{host}:{container}"
+                for host, container in component.ports.items()
+            ]
+
+        debug(
+            "Compose configuration generated",
+            component=component.name,
+            image=component.image,
+            ports=component.ports,
+            mounts=component.mounting,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "compose.yaml"
+
+            with path.open("w") as f:
+                yaml.safe_dump(config, f)
+
+            debug(
+                "Uploading Compose configuration",
+                wrapper=wrapper.name,
+                destination=COMPOSE_FILE,
+            )
+
+            self.upload(wrapper, path, COMPOSE_FILE)
+
+        debug("Starting nested container", name=name, wrapper=wrapper.name)
+
+        result = self.launch_compose(component, wrapper)
+
+        debug(
+            "Compose deployment completed",
+            name=name,
+            output=result.get("output"),
+        )
+
+        debug("Verifying nested container state", name=name)
+
+        result = chi.container.execute(
+            wrapper.uuid,
+            f"docker inspect -f '{{{{.State.Running}}}}' {shlex.quote(name)}",
+        )
+        self.check(result, "Inspect nested container")
+
+        if result["output"].strip() != "true":
+            debug(
+                "Nested container is not running",
+                name=name,
+                state=result["output"].strip(),
+            )
+            raise RuntimeError(f"Container '{name}' is not running")
+
+        debug(
+            "Nested container deployment successful",
+            name=name,
+            wrapper=wrapper.name,
+        )
+
+    def setup_wrapper_network(self, wrapper):
+        debug("Configuring wrapper network", wrapper=wrapper.name)
+
+        result = chi.container.execute(
+            wrapper.uuid,
+            "ip route replace default via 169.254.1.1 dev eth0",
+        )
+
+        self.check(result, "Configure wrapper default route")
+
+        debug("Wrapper network configured", wrapper=wrapper.name)
+
+    def create_wrapper_with_retry(self, kwargs, attempts=3):
+        for attempt in range(attempts):
+            try:
+                wrapper = chi.container.create_container(**kwargs)
+                chi.container.wait_for_active(wrapper.uuid)
+                return wrapper
+
+            except Exception as e:
+                debug(
+                    "Wrapper creation failed",
+                    attempt=attempt + 1,
+                    error=repr(e),
+                )
+
+                if attempt == attempts - 1:
+                    raise
+
+                time.sleep(min(2 ** attempt, 10))
+
+
     def deploy(self, component, node, register_host=True):
         reservation_id = self.allocated(node.worker_name).reservation_id
         name = self.format_name(component.name)
@@ -255,6 +516,7 @@ class ExpecaBackend(Backend):
               image=component.image, worker=node.worker_name, reservation_id=reservation_id)
 
         containers = {c.name: c for c in chi.container.list_containers()}
+
         existing = containers.get(name)
 
         if existing is not None and component.redeploy:
@@ -264,47 +526,57 @@ class ExpecaBackend(Backend):
             debug("Reusing existing container", name=name, uuid=existing.uuid)
             if not existing.addresses:
                 raise RuntimeError(f"Container '{existing.name}' has no assigned IP address.")
+
             self.add_host(existing.name, next(iter(existing.addresses.values()))[0]["addr"])
             return existing
 
-        ready_path = self.get_ready_path()
-        command = None
-        if component.command is None and component.mounting:
-            raise RuntimeError("If you want to mount a file, you need to declare the command explicitly.")
-        elif component.command is not None:
-            command = [
-                "sh", "-c",
-                f"""while [ ! -f {shlex.quote(ready_path)} ]; do
-    sleep 0.2
-done
-{" ".join(shlex.quote(arg) for arg in component.command)}
-sleep infinity
-""",
-            ]
 
         kwargs = {
             "name": name,
-            "image": component.image,
+            "image": WRAPPER_IMAGE,
             "reservation_id": reservation_id,
-            "command": command,
+            "start": True,
+            "start_timeout": 300,
+            "environment": {
+                "DNS_IP": "8.8.8.8",
+            },
+            "labels": {
+                "capabilities.privileged": "true",
+            },
         }
+
+        if component.ports:
+            kwargs["exposed_ports"] = component.ports
+
         print(f"Deploying {component.name} on {reservation_id}")
-        debug("Creating container", name=name, command=command)
+
+        debug("Creating wrapper", name=name)
+
         try:
-            container = chi.container.create_container(**kwargs)
-            debug("Container creation returned", name=name, uuid=container.uuid)
-            chi.container.wait_for_active(container.uuid)
-            debug("Container became ACTIVE", name=name, uuid=container.uuid)
+            wrapper = self.create_wrapper_with_retry(kwargs)
+            debug("Wrapper creation returned", name=name, uuid=wrapper.uuid)
+            
+            chi.container.wait_for_active(wrapper.uuid)
+            debug("Wrapper became ACTIVE", name=name, uuid=wrapper.uuid)
+
+            self.wait_for_docker(wrapper)
+            debug("Wrapper's docker daemon is ready", name=name, uuid=wrapper.uuid)
+
+            self.setup_wrapper_network(wrapper)
+            debug("Wrapper's network is setup", name=name, uuid=wrapper.uuid)
+            
         except Exception as e:
             debug("Container deployment failed", name=name, error=repr(e))
             raise RuntimeError(f"Failed to deploy '{component.name}' on '{node.worker_name}'.") from e
 
         if register_host:
-            self.register_host(container)
+            self.register_host(wrapper)
 
-        self.upload_hosts(container)
         for src, dst in component.mounting.items():
-            self.upload(container, src, dst)
-        self.upload_ready_file(container)
-        debug("Deployment finished", name=name, uuid=container.uuid)
-        return container
+            self.upload(wrapper, src, dst)
+
+        self.launch_container(component, wrapper)
+
+        return wrapper
+
+    

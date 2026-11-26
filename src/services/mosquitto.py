@@ -35,6 +35,8 @@ class Mosquitto(Component):
         self.port = port
         self.timeout = timeout
 
+        self.expose_port(self.port, self.port)
+
         if config_path is not None:
             self.mount(
                 config_path,

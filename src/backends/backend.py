@@ -13,6 +13,10 @@ class Backend(ABC):
         pass
 
     @abstractmethod
+    def resolve_name(self, name):
+        """Return the ip address associated to name, None otherwise"""
+
+    @abstractmethod
     def deploy(self, node, component):
         """Deploy an image to a given node."""
         pass

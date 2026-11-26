@@ -45,6 +45,7 @@ class Cluster:
     def reserve_node(self, node):
         self.nodes.append(node)
         self.backend.reserve_node(node)
+        return node
 
     def get_nodes(self, nodes):
         return self.nodes

@@ -28,6 +28,9 @@ class DockerBackend(Backend):
         print(f"Removing container {container.name}")
         container.remove(force=True)
 
+    def resolve_name(self, name):
+        return name
+
     def wait_for(self, host, port, timeout):
         import time
 
